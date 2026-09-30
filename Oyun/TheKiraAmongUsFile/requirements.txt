@@ -1,3 +1,0 @@
-streamlit
-streamlit-autorun
-firebase-admin
