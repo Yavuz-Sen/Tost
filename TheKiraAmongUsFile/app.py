@@ -1,14 +1,111 @@
+import streamlit as st
+import firebase_admin
+from firebase_admin import credentials, firestore
 import random
 import time
 
 # ==============================================================================
-# 1. ROL TANIMLARI
+# 1. STREAMLIT SAYFA AYARLARI VE ÖZEL CSS (HTML Temasına Sadık)
+# ==============================================================================
+st.set_page_config(
+    page_title="Death Note: Kasabadaki Defter",
+    page_icon="📖",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# Dark Gothic Death Note Teması
+st.markdown("""
+<style>
+    /* Ana Arka Plan */
+    .stApp {
+        background-color: #0a0a0c;
+        color: #e2e8f0;
+    }
+    
+    /* Başlık Stili */
+    .death-title {
+        font-family: 'Cinzel', serif;
+        color: #ffffff;
+        text-shadow: 0 0 15px rgba(220, 38, 38, 0.6);
+        text-align: center;
+    }
+    
+    /* Kart Yapıları */
+    .death-card {
+        background-color: #121216;
+        border: 1px solid #262630;
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 12px;
+    }
+    
+    /* Canlı/Ölü Oyuncu Kartı */
+    .player-alive {
+        border: 1px solid #262630;
+        background-color: #121216;
+        padding: 12px;
+        border-radius: 8px;
+        text-align: center;
+    }
+    .player-dead {
+        border: 1px solid #8b0000;
+        background-color: #0a0a0c;
+        opacity: 0.5;
+        padding: 12px;
+        border-radius: 8px;
+        text-align: center;
+    }
+    
+    /* Kırmızı Vurgu */
+    .text-crimson {
+        color: #dc2626;
+        font-weight: bold;
+    }
+    
+    /* Günlük Log Başlığı */
+    .log-box {
+        background-color: #0a0a0c;
+        border: 1px solid #262630;
+        border-radius: 8px;
+        padding: 10px;
+        height: 380px;
+        overflow-y: auto;
+        font-size: 0.85rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ==============================================================================
+# 2. FIREBASE KURULUMU (Secrets Yöneticisi ile)
+# ==============================================================================
+@st.cache_resource
+def init_firebase():
+    if not firebase_admin._apps:
+        try:
+            cred_dict = dict(st.secrets["firebase"])
+            # Multi-line private key formatını düzelt
+            if "private_key" in cred_dict:
+                cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
+            cred = credentials.Certificate(cred_dict)
+            return firebase_admin.initialize_app(cred)
+        except Exception as e:
+            st.warning(f"Firebase Secrets yüklenemedi, yerel modda çalışılıyor: {e}")
+            return None
+    return firebase_admin.get_app()
+
+firebase_app = init_firebase()
+db = firestore.client() if firebase_app else None
+
+# ==============================================================================
+# 3. SABİTLER VE ROL TANIMLARI
 # ==============================================================================
 ROLES = {
     'KIRA': {
         'id': 'KIRA',
         'name': 'Kira (Light)',
         'team': 'KIRA',
+        'icon': '💀',
         'goal': 'Soruşturma ekibini tek tek eleyerek üstünlük kurmak.',
         'ability': 'Her gece Death Note\'a bir kurban ismi yazar (Kalp krizi).'
     },
@@ -16,6 +113,7 @@ ROLES = {
         'id': 'MISA',
         'name': 'Misa / İkinci Kira',
         'team': 'KIRA',
+        'icon': '👁️',
         'goal': 'Kira\'ya yardım etmek ve soruşturmacıları şaşırtmak.',
         'ability': 'Şinigami Gözleri ile oyunda en fazla 2 kez birinin TAM rolünü öğrenir.'
     },
@@ -23,6 +121,7 @@ ROLES = {
         'id': 'L',
         'name': 'L (Lider Dedektif)',
         'team': 'TOWN',
+        'icon': '🔍',
         'goal': 'Kira ve Misa\'yı tespit edip gündüz idam ettirmek.',
         'ability': 'Her gece bir oyuncuyu sorgular: "Kira Tarafı" mı yoksa "Masum" mu öğrenir.'
     },
@@ -30,6 +129,7 @@ ROLES = {
         'id': 'WATARI',
         'name': 'Watari (Koruyucu)',
         'team': 'TOWN',
+        'icon': '🛡️',
         'goal': 'Masumları ve L\'i Kira\'nın defterinden korumak.',
         'ability': 'Her gece bir oyuncuyu korumaya alır. O gece yazılırsa hedef ölmez.'
     },
@@ -37,6 +137,7 @@ ROLES = {
         'id': 'CITIZEN',
         'name': 'Soruşturma Ekibi (Near/Mello)',
         'team': 'TOWN',
+        'icon': '🕵️',
         'goal': 'Gündüz tartışmalarında mantık yürüterek Kira\'yı bulmak.',
         'ability': 'Özel gece gücü yoktur, oylamada yüksek analiz gücüne sahiptir.'
     },
@@ -44,375 +145,354 @@ ROLES = {
         'id': 'RYUK',
         'name': 'Ryuk (Şinigami)',
         'team': 'NEUTRAL',
+        'icon': '🍎',
         'goal': 'Eğlenmek! Tek amacı gündüz mahkemesinde kendisini astırmaktır.',
         'ability': 'Gündüz oylamasında asılırsa oyunu anında TEK BAŞINA kazanır.'
     }
 }
 
-BOT_NAMES = [
-    'L Lawliet', 'Light Yagami', 'Misa Amane', 'Near (N)', 'Mello (M)', 
-    'Watari', 'Matsuda', 'Aizawa', 'Mogi', 'Ide', 'Teru Mikami'
-]
+BOT_NAMES = ['L Lawliet', 'Light Yagami', 'Misa Amane', 'Near (N)', 'Mello (M)', 'Watari', 'Matsuda', 'Aizawa', 'Mogi', 'Ide', 'Teru Mikami']
 
 # ==============================================================================
-# 2. OYUNCU SINIFI
+# 4. SESSION STATE (OYUN DURUMU) İLKLENDİRME
 # ==============================================================================
-class Player:
-    def __init__(self, player_id, name, is_ai, role):
-        self.id = player_id
-        self.name = name
-        self.is_ai = is_ai
-        self.role = role
-        self.is_alive = True
+if 'game_state' not in st.session_state:
+    st.session_state.game_state = {
+        'phase': 'SETUP',  # 'SETUP', 'NIGHT', 'DAY_DISCUSSION', 'DAY_VOTING', 'GAME_OVER'
+        'mode': 'ai',
+        'night_number': 1,
+        'players': [],
+        'logs': [],
+        'misa_charges': 2,
+        'night_actions': {},
+        'active_pass_idx': 0,
+        'game_id': None
+    }
 
-    def __repr__(self):
-        status = "CANLI" if self.is_alive else "ÖLÜ"
-        return f"{self.name} ({self.role['name']}) - {status}"
+gs = st.session_state.game_state
+
+def add_log(msg, log_type='info'):
+    prefix = {"danger": "💀", "success": "🛡️", "phase": "🌙", "system": "📜"}.get(log_type, "🔹")
+    entry = f"{prefix} {msg}"
+    gs['logs'].append(entry)
+    
+    # Firebase'e senkronize et
+    if db and gs['game_id']:
+        try:
+            db.collection("games").document(gs['game_id']).update({
+                "logs": firestore.ArrayUnion([entry])
+            })
+        except Exception:
+            pass
 
 # ==============================================================================
-# 3. OYUN MOTORU
+# 5. OYUN KURULUM FONKSİYONLARI
 # ==============================================================================
-class DeathNoteGame:
-    def __init__(self):
-        self.mode = 'ai'  # 'ai' veya 'pass'
-        self.players = []
-        self.night_number = 1
-        self.misa_charges_left = 2
-        self.game_over = False
+def start_new_game(mode, player_name, role_pref, total_players, pass_names_text):
+    gs['mode'] = mode
+    gs['night_number'] = 1
+    gs['misa_charges'] = 2
+    gs['logs'] = []
+    gs['players'] = []
+    gs['game_id'] = f"game_{int(time.time())}"
 
-    def setup_game(self):
-        print("="*60)
-        print("         DEATH NOTE: KASABADAKİ DEFTER (Python)")
-        print("="*60)
+    names = []
+    if mode == 'ai':
+        names.append({'name': player_name or 'Kira Hunter', 'is_ai': False, 'pref': role_pref})
+        shuffled = [b for b in BOT_NAMES if b != player_name]
+        random.shuffle(shuffled)
+        for i in range(total_players - 1):
+            names.append({'name': shuffled[i] if i < len(shuffled) else f'Bot {i+1}', 'is_ai': True, 'pref': 'RANDOM'})
+    else:
+        lines = [l.strip() for l in pass_names_text.split('\n') if l.strip()]
+        for l in lines:
+            names.append({'name': l, 'is_ai': False, 'pref': 'RANDOM'})
+
+    # Rol Dağıtımı
+    deck = [ROLES['KIRA'], ROLES['L'], ROLES['WATARI'], ROLES['MISA'], ROLES['RYUK']]
+    while len(deck) < len(names):
+        deck.append(ROLES['CITIZEN'])
+    random.shuffle(deck)
+
+    # İnsan oyuncunun rol tercihi
+    if names[0]['pref'] != 'RANDOM':
+        target = names[0]['pref']
+        found = next((i for i, r in enumerate(deck) if r['id'] == target), None)
+        if found is not None:
+            deck[0], deck[found] = deck[found], deck[0]
+
+    for idx, n in enumerate(names):
+        gs['players'].append({
+            'id': f'p_{idx}',
+            'name': n['name'],
+            'is_ai': n['is_ai'],
+            'role': deck[idx],
+            'is_alive': True
+        })
+
+    # Firebase Kaydı
+    if db:
+        try:
+            db.collection("games").document(gs['game_id']).set({
+                "created_at": firestore.SERVER_TIMESTAMP,
+                "mode": mode,
+                "player_count": len(names)
+            })
+        except Exception:
+            pass
+
+    gs['phase'] = 'NIGHT'
+    add_log("Oyun başladı! Kasabada şüpheli ölümler ve gerilim tırmanıyor.", "system")
+
+# ==============================================================================
+# 6. HEADER VE ÜST PANEL
+# ==============================================================================
+st.markdown("<h1 class='death-title'>📖 DEATH NOTE: KASABADAKI DEFTER</h1>", unsafe_allow_html=True)
+
+# ==============================================================================
+# 7. EKRAN 1: SETUP (AYARLAR VE MOD SEÇİMİ)
+# ==============================================================================
+if gs['phase'] == 'SETUP':
+    st.markdown("### ⚙️ Oyun Kurulumu")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        mode = st.radio("Oyun Modu", ["Yapay Zeka BOTS (Tek Başına)", "Pass & Play (Aynı Cihazda Arkadaşlarınla)"])
+        is_ai = "Yapay Zeka" in mode
+    
+    with col2:
+        if is_ai:
+            player_name = st.text_input("Adınız", value="Kira Hunter")
+            role_pref = st.selectbox("Tercih Ettiğiniz Rol", ["RANDOM", "KIRA", "L", "MISA", "WATARI", "RYUK", "CITIZEN"])
+            total_players = st.slider("Toplam Oyuncu Sayısı", min_value=6, max_value=10, value=7)
+            pass_text = ""
+        else:
+            player_name, role_pref, total_players = "", "RANDOM", 7
+            pass_text = st.text_area("Oyuncu İsimleri (Her satıra bir isim - Min 6)", value="Light\nL Lawliet\nMisa\nNear\nMello\nWatari\nMatsuda")
+
+    if st.button("🚀 Oyunu Başlat", use_container_width=True):
+        if not is_ai and len([l for l in pass_text.split('\n') if l.strip()]) < 6:
+            st.error("Pass & Play modunda en az 6 oyuncu yazmalısınız!")
+        else:
+            start_new_game('ai' if is_ai else 'pass', player_name, role_pref, total_players, pass_text)
+            st.rerun()
+
+# ==============================================================================
+# 8. EKRAN 2: GECE / GÜNDÜZ / OYLAMA / GAME OVER
+# ==============================================================================
+else:
+    # Üst Kontrol Barı
+    c1, c2, c3 = st.columns([2, 2, 1])
+    with c1:
+        st.subheader(f"📍 Faz: {gs['phase']} | Gece {gs['night_number']}")
+    with c2:
+        alive_cnt = sum(1 for p in gs['players'] if p['is_alive'])
+        st.info(f"👥 Canlı Oyuncular: {alive_cnt}/{len(gs['players'])}")
+    with c3:
+        if st.button("🔄 Yeniden Başlat"):
+            gs['phase'] = 'SETUP'
+            st.rerun()
+
+    main_col, log_col = st.columns([2, 1])
+
+    # --------------------------------------------------------------------------
+    # SOL PANEL: OYUNCU KARTLARI VE HAMLELER
+    # --------------------------------------------------------------------------
+    with main_col:
         
-        # Oyun Modu Seçimi
-        print("\n1- Yapay Zeka BOTS (Tek Başına Oyna)")
-        print("2- Pass & Play (Aynı Cihazda Sırayla Oyna)")
-        mode_choice = input("Mod Seçiniz (1/2, Varsayılan: 1): ").strip()
-        self.mode = 'pass' if mode_choice == '2' else 'ai'
+        # --- OYUNCU LİSTESİ BİLGİ KARTLARI ---
+        st.markdown("#### Kasaba Sakinleri")
+        p_cols = st.columns(4)
+        for idx, p in enumerate(gs['players']):
+            with p_cols[idx % 4]:
+                card_class = "player-alive" if p['is_alive'] else "player-dead"
+                status_icon = "🟢" if p['is_alive'] else "💀"
+                st.markdown(f"""
+                <div class="{card_class}">
+                    <b>{p['name']}</b><br/>
+                    <small>{status_icon} {'CANLI' if p['is_alive'] else 'ÖLÜ'}</small><br/>
+                    <small style="color: #94a3b8;">{'BOT' if p['is_ai'] else 'OYUNCU'}</small>
+                </div>
+                """, unsafe_allow_html=True)
 
-        names_data = []
+        st.divider()
 
-        if self.mode == 'ai':
-            human_name = input("\nAdınızı Girin (Varsayılan: Kira Hunter): ").strip() or "Kira Hunter"
+        # --- FAZ 1: GECE EVRESİ ---
+        if gs['phase'] == 'NIGHT':
+            st.markdown("### 🌙 Gece Çöktü")
             
-            print("\nTercih Edilen Rol Seçin:")
-            print("1. RANDOM (Rastgele)")
-            print("2. KIRA")
-            print("3. L")
-            print("4. MISA")
-            print("5. WATARI")
-            print("6. RYUK")
-            print("7. CITIZEN")
-            role_map = {'1':'RANDOM', '2':'KIRA', '3':'L', '4':'MISA', '5':'WATARI', '6':'RYUK', '7':'CITIZEN'}
-            role_choice = input("Seçiminiz (1-7): ").strip()
-            preferred_role = role_map.get(role_choice, 'RANDOM')
-
-            try:
-                count = int(input("\nToplam Oyuncu Sayısı (6-10 arası, Varsayılan: 7): "))
-                count = max(6, min(10, count))
-            except ValueError:
-                count = 7
-
-            names_data.append({'name': human_name, 'is_ai': False, 'preferred_role': preferred_role})
-
-            shuffled_bots = [b for b in BOT_NAMES if b != human_name]
-            random.shuffle(shuffled_bots)
-
-            for i in range(count - 1):
-                bot_name = shuffled_bots[i] if i < len(shuffled_bots) else f"Dedektif #{i+1}"
-                names_data.append({'name': bot_name, 'is_ai': True, 'preferred_role': 'RANDOM'})
-        else:
-            print("\nOyuncu İsimlerini Girin (En az 6 oyuncu, bitirmek için boş satıra Enter basın):")
-            idx = 1
-            while True:
-                p_name = input(f"{idx}. Oyuncu Adı: ").strip()
-                if not p_name:
-                    if len(names_data) >= 6:
-                        break
+            human_player = gs['players'][0] if gs['mode'] == 'ai' else gs['players'][gs['active_pass_idx']]
+            
+            if not human_player['is_alive'] and gs['mode'] == 'ai':
+                st.warning("Hayattasınız değilsiniz. Gece hamleleri yapılıyor...")
+                if st.button("Gündüze Geç"):
+                    # Bot Hamlelerini Çöz
+                    alive_p = [p for p in gs['players'] if p['is_alive']]
+                    kira_p = next((p for p in alive_p if p['role']['id'] == 'KIRA'), None)
+                    watari_p = next((p for p in alive_p if p['role']['id'] == 'WATARI'), None)
+                    
+                    kt = random.choice([p for p in alive_p if p['id'] != kira_p['id']])['id'] if kira_p else None
+                    wt = random.choice(alive_p)['id'] if watari_p else None
+                    
+                    killed = next((p for p in gs['players'] if p['id'] == kt and kt != wt), None)
+                    if killed:
+                        killed['is_alive'] = False
+                        add_log(f"{killed['name']} yatağında ölü bulundu! (Kalp Krizi)", "danger")
                     else:
-                        print(f"En az 6 oyuncu girmelisiniz! (Şu an: {len(names_data)})")
-                        continue
-                names_data.append({'name': p_name, 'is_ai': False, 'preferred_role': 'RANDOM'})
-                idx += 1
+                        add_log("Bu gece kimse ölmedi!", "success")
+                        
+                    gs['phase'] = 'DAY_DISCUSSION'
+                    st.rerun()
 
-        # Rol Destesi Oluşturma ve Dağıtma
-        roles_list = self.build_role_deck(len(names_data), names_data[0].get('preferred_role', 'RANDOM'))
-        
-        for idx, item in enumerate(names_data):
-            player = Player(
-                player_id=f"player_{idx}",
-                name=item['name'],
-                is_ai=item['is_ai'],
-                role=roles_list[idx]
-            )
-            self.players.append(player)
-
-        print("\n[!] Oyun Başladı! Kasabada gerilim tırmanıyor...\n")
-
-    def build_role_deck(self, count, preferred_role):
-        deck = [ROLES['KIRA'], ROLES['L'], ROLES['WATARI'], ROLES['MISA'], ROLES['RYUK']]
-        while len(deck) < count:
-            deck.append(ROLES['CITIZEN'])
-
-        random.shuffle(deck)
-
-        if preferred_role != 'RANDOM':
-            found_idx = next((i for i, r in enumerate(deck) if r['id'] == preferred_role), None)
-            if found_idx is not None:
-                deck[0], deck[found_idx] = deck[found_idx], deck[0]
-        return deck
-
-    # ==========================================================================
-    # 4. GECE EVRESİ
-    # ==========================================================================
-    def start_night_phase(self):
-        print(f"\n=================== GECE {self.night_number} BAŞLADI ===================")
-        print("Karanlık çöktü. Tüm kasaba uykuya çekildi...\n")
-
-        night_actions = {
-            'kira_target': None,
-            'watari_target': None,
-            'l_target': None,
-            'misa_target': None
-        }
-
-        if self.mode == 'pass':
-            for player in self.players:
-                if not player.is_alive:
-                    continue
-                input(f"\n[Ekrana Sadece '{player.name}' Baksın!] Devam etmek için Enter'a basın...")
-                self.process_player_night_turn(player, night_actions)
-                print("\n" * 30) # Ekranı temizleme efekti
-        else:
-            # AI Modunda
-            human_player = self.players[0]
-
-            # Bot Eylemleri
-            alive_players = [p for p in self.players if p.is_alive]
-            for p in self.players:
-                if p.is_ai and p.is_alive:
-                    targets = [t for t in alive_players if t.id != p.id]
-                    if not targets:
-                        continue
-                    random_target = random.choice(targets)
-
-                    if p.role['id'] == 'KIRA':
-                        night_actions['kira_target'] = random_target.id
-                    elif p.role['id'] == 'WATARI':
-                        night_actions['watari_target'] = random_target.id
-                    elif p.role['id'] == 'L':
-                        night_actions['l_target'] = random_target.id
-                    elif p.role['id'] == 'MISA' and self.misa_charges_left > 0:
-                        night_actions['misa_target'] = random_target.id
-
-            # İnsan Eylemi
-            if human_player.is_alive:
-                self.process_player_night_turn(human_player, night_actions)
             else:
-                print("Siz öldüğünüz için geceyi izliyorsunuz...")
-                time.sleep(1)
+                st.info(f"**Sıradaki Oyuncu:** {human_player['name']} | **Rol:** {human_player['role']['name']} ({human_player['role']['icon']})")
+                st.caption(f"**Yetenek:** {human_player['role']['ability']}")
 
-        self.resolve_night_results(night_actions)
+                alive_targets = [p for p in gs['players'] if p['is_alive'] and p['id'] != human_player['id']]
+                target_names = {p['id']: p['name'] for p in alive_targets}
 
-    def process_player_night_turn(self, player, night_actions):
-        print(f"\n--- Sıra Sizde: {player.name} ---")
-        print(f"Rolünüz: {player.role['name']} | Taraf: {player.role['team']}")
-        print(f"Yetenek: {player.role['ability']}")
+                role_id = human_player['role']['id']
+                selected_target_id = None
 
-        alive_targets = [p for p in self.players if p.is_alive and p.id != player.id]
+                if role_id == 'KIRA':
+                    selected_target_id = st.selectbox("Death Note'a Yazılacak Kurbanı Seç:", list(target_names.keys()), format_func=lambda x: target_names[x])
+                elif role_id == 'WATARI':
+                    all_alive = {p['id']: p['name'] for p in gs['players'] if p['is_alive']}
+                    selected_target_id = st.selectbox("Korumak İstediğin Kişiyi Seç:", list(all_alive.keys()), format_func=lambda x: all_alive[x])
+                elif role_id == 'L':
+                    selected_target_id = st.selectbox("Sorgulamak İstediğin Şüpheliyi Seç:", list(target_names.keys()), format_func=lambda x: target_names[x])
+                elif role_id == 'MISA':
+                    if gs['misa_charges'] > 0:
+                        st.write(f"Kalan Şinigami Gözü Hakkı: {gs['misa_charges']}")
+                        selected_target_id = st.selectbox("Rolünü Öğrenmek İstediğin Kişiyi Seç:", list(target_names.keys()), format_func=lambda x: target_names[x])
+                    else:
+                        st.write("Göz hakkınız kalmadı.")
 
-        if player.role['id'] == 'KIRA':
-            target = self.prompt_player_selection("Death Note'a yazıp öldürmek istediğiniz oyuncuyu seçin:", alive_targets)
-            if target:
-                night_actions['kira_target'] = target.id
+                if st.button("Gece Hamlesini Onayla"):
+                    # L veya Misa Bilgi Bildirimi
+                    if role_id == 'L' and selected_target_id:
+                        t_obj = next(p for p in gs['players'] if p['id'] == selected_target_id)
+                        is_evil = t_obj['role']['team'] == 'KIRA'
+                        st.toast(f"🔍 Soruşturma Sonucu: {t_obj['name']} -> {'🔴 KIRA TARAFI' if is_evil else '🟢 MASUM'}")
+                        time.sleep(2)
+                    elif role_id == 'MISA' and selected_target_id and gs['misa_charges'] > 0:
+                        t_obj = next(p for p in gs['players'] if p['id'] == selected_target_id)
+                        gs['misa_charges'] -= 1
+                        st.toast(f"👁️ Şinigami Gözü Sonucu: {t_obj['name']} -> {t_obj['role']['name']}")
+                        time.sleep(2)
 
-        elif player.role['id'] == 'WATARI':
-            # Watari kendisini de koruyabilir
-            all_alive = [p for p in self.players if p.is_alive]
-            target = self.prompt_player_selection("Korumak istediğiniz oyuncuyu seçin:", all_alive)
-            if target:
-                night_actions['watari_target'] = target.id
+                    # Gece Geçiçi Kayıt
+                    gs['night_actions'][human_player['id']] = {
+                        'role': role_id,
+                        'target': selected_target_id
+                    }
 
-        elif player.role['id'] == 'L':
-            target = self.prompt_player_selection("Sorgulamak (şüpheli tespiti yapımı) istediğiniz oyuncuyu seçin:", alive_targets)
-            if target:
-                night_actions['l_target'] = target.id
-                is_evil = target.role['team'] == 'KIRA'
-                result = "🔴 KIRA TARAFI!" if is_evil else "🟢 MASUM"
-                print(f"\n🔍 [L Soruşturma Sonucu]: {target.name} -> {result}")
-                input("Devam etmek için Enter'a basın...")
+                    # AI Botlarının Hamlelerini Otomatik Simüle Et (AI Modundaysak)
+                    if gs['mode'] == 'ai':
+                        alive_p = [p for p in gs['players'] if p['is_alive']]
+                        kt = selected_target_id if role_id == 'KIRA' else None
+                        wt = selected_target_id if role_id == 'WATARI' else None
 
-        elif player.role['id'] == 'MISA':
-            if self.misa_charges_left > 0:
-                print(f"Kalan Şinigami Gözü Hakkı: {self.misa_charges_left}")
-                choice = input("Göz hakkı kullanmak ister misiniz? (E/H): ").strip().lower()
-                if choice == 'e':
-                    target = self.prompt_player_selection("TAM rolünü öğrenmek istediğiniz oyuncuyu seçin:", alive_targets)
-                    if target:
-                        night_actions['misa_target'] = target.id
-                        self.misa_charges_left -= 1
-                        print(f"\n👁️ [Şinigami Gözleri]: {target.name} oyuncusunun GERÇEK rolü: {target.role['name']}")
-                        input("Devam etmek için Enter'a basın...")
-            else:
-                print("Göz hakkınız kalmadı. Gece pas geçiliyor.")
-                input("Devam etmek için Enter'a basın...")
-        else:
-            print("Gece yapacak özel bir eyleminiz bulunmuyor.")
-            input("Geceyi geçmek için Enter'a basın...")
+                        # Eğer insan Kira veya Watari değilse Botlar seçsin
+                        if not kt:
+                            k_bot = next((p for p in alive_p if p['is_ai'] and p['role']['id'] == 'KIRA'), None)
+                            if k_bot:
+                                kt = random.choice([p for p in alive_p if p['id'] != k_bot['id']])['id']
+                        if not wt:
+                            w_bot = next((p for p in alive_p if p['is_ai'] and p['role']['id'] == 'WATARI'), None)
+                            if w_bot:
+                                wt = random.choice(alive_p)['id']
 
-    def prompt_player_selection(self, prompt_text, valid_players):
-        print(f"\n{prompt_text}")
-        for idx, p in enumerate(valid_players, 1):
-            print(f"{idx}. {p.name}")
-        
-        while True:
-            try:
-                choice = int(input("Seçiminiz (Numara): "))
-                if 1 <= choice <= len(valid_players):
-                    return valid_players[choice - 1]
-            except ValueError:
-                pass
-            print("Geçersiz seçim, lütfen listedeki numaralardan birini girin.")
+                        # Sonucu Hesapla
+                        killed = next((p for p in gs['players'] if p['id'] == kt and kt != wt), None)
+                        if killed:
+                            killed['is_alive'] = False
+                            add_log(f"{killed['name']} yatağında ölü bulundu! Ölüm Sebebi: Kalp Krizi.", "danger")
+                        else:
+                            add_log("🛡️ Bu gece kimse ölmedi! Watari bir masumu korumuş olabilir.", "success")
 
-    def resolve_night_results(self, night_actions):
-        kira_target = night_actions['kira_target']
-        watari_target = night_actions['watari_target']
+                        gs['phase'] = 'DAY_DISCUSSION'
+                        st.rerun()
 
-        killed_player = None
-        if kira_target and kira_target != watari_target:
-            killed_player = next((p for p in self.players if p.id == kira_target), None)
+        # --- FAZ 2: GÜNDÜZ TARTIŞMASI VE OYLAMA ---
+        elif gs['phase'] in ['DAY_DISCUSSION', 'DAY_VOTING']:
+            st.markdown("### ☀️ Gündüz Mahkemesi")
+            st.write("Şüphelileri değerlendirin ve Kira olduğundan şüphelendiğiniz kişiyi oylayın.")
 
-        self.start_day_phase(killed_player)
+            alive_targets = [p for p in gs['players'] if p['is_alive']]
+            target_names = {p['id']: p['name'] for p in alive_targets}
 
-    # ==========================================================================
-    # 5. GÜNDÜZ VE OYLAMA EVRESİ
-    # ==========================================================================
-    def start_day_phase(self, killed_player):
-        print(f"\n=================== GÜNDÜZ {self.night_number} BAŞLADI ===================")
-        print("Güneş doğdu. Kasaba meydanında toplanılıyor...\n")
+            vote_target = st.selectbox("İdam Edilmesini İstediğiniz Oyuncu:", list(target_names.keys()), format_func=lambda x: target_names[x])
 
-        if killed_player:
-            killed_player.is_alive = False
-            print(f"💀 SOHBET MEYDANI: {killed_player.name} yatağında ölü bulundu! Death Note Ölüm Sebebi: Kalp Krizi.")
-        else:
-            print("🛡️ Bu gece kimse ölmedi! Watari doğru kişiyi korumuş olabilir.")
+            if st.button("⚖️ Oyu Gönder ve Mahkeme Kararını Açıkla"):
+                votes = {p['id']: 0 for p in alive_targets}
+                
+                # İnsan Oyu
+                votes[vote_target] += 1
+                
+                # Bot Oyları
+                for p in alive_targets:
+                    if p['is_ai']:
+                        choices = [t['id'] for t in alive_targets if t['id'] != p['id']]
+                        if choices:
+                            votes[random.choice(choices)] += 1
 
-        if self.check_win_conditions():
-            return
+                # En Çok Oy Alan
+                max_v = max(votes.values())
+                top_voters = [pid for pid, cnt in votes.items() if cnt == max_v]
 
-        print("\n--- GÜNDÜZ TARTIŞMASI VE MAHKEME ---")
-        alive_players = [p for p in self.players if p.is_alive]
-        print("Canlı Oyuncular:")
-        for p in alive_players:
-            print(f"- {p.name}")
+                if len(top_voters) == 1:
+                    lynched = next(p for p in gs['players'] if p['id'] == top_voters[0])
+                    lynched['is_alive'] = False
+                    add_log(f"⚖️ MAHKEME KARARI: {lynched['name']} çoğunluk oyuyla ({max_v} oy) idam edildi!", "danger")
+                    add_log(f"📜 {lynched['name']} oyuncusunun gerçek rolü: {lynched['role']['name']}", "system")
 
-        input("\nDisküsyon tamamlandı. Mahkeme oylamasına geçmek için Enter'a basın...")
-        self.process_voting_phase()
+                    # Ryuk Kazanma Kontrolü
+                    if lynched['role']['id'] == 'RYUK':
+                        gs['phase'] = 'GAME_OVER'
+                        gs['winner'] = ('RYUK', 'Ryuk kendisini astırmayı başardı ve oyunu TEK BAŞINA kazandı!')
+                        st.rerun()
+                else:
+                    add_log("⚖️ Oylar eşit çıktı, bugün kimse idam edilmedi.", "system")
 
-    def process_voting_phase(self):
-        print("\n=================== MAHKEME OYLAMASI ===================")
-        print("Kira olduğundan şüphelendiğiniz kişiyi oylayarak mahkemede asın!\n")
+                # Kazanma Koşulu Kontrolü
+                alive_now = [p for p in gs['players'] if p['is_alive']]
+                kira_team = [p for p in alive_now if p['role']['team'] == 'KIRA']
+                town_team = [p for p in alive_now if p['role']['team'] in ['TOWN', 'NEUTRAL']]
 
-        alive_players = [p for p in self.players if p.is_alive]
-        votes = {p.id: 0 for p in alive_players}
+                if len(kira_team) == 0:
+                    gs['phase'] = 'GAME_OVER'
+                    gs['winner'] = ('TOWN', 'Tüm Kira destekçileri etkisiz hale getirildi. Adalet sağlandı!')
+                elif len(kira_team) >= len(town_team):
+                    gs['phase'] = 'GAME_OVER'
+                    gs['winner'] = ('KIRA', 'Kira kasabada tam kontrolü sağladı. Yeni Dünya\'nın Tanrısı doğdu!')
+                else:
+                    gs['night_number'] += 1
+                    gs['phase'] = 'NIGHT'
 
-        if self.mode == 'pass':
-            for player in alive_players:
-                input(f"\n[Ekrana Sadece '{player.name}' Baksın!] Oy vermek için Enter'a basın...")
-                valid_targets = [p for p in alive_players if p.id != player.id]
-                target = self.prompt_player_selection(f"{player.name}, idam edilmesini istediğin kişiyi seç:", valid_targets)
-                votes[target.id] += 1
-                print("\n" * 30)
-        else:
-            # AI Modu Oylaması
-            human = self.players[0]
-            if human.is_alive:
-                valid_targets = [p for p in alive_players if p.id != human.id]
-                target = self.prompt_player_selection("İdam edilmesini istediğiniz oyuncuyu seçin:", valid_targets)
-                votes[target.id] += 1
+                st.rerun()
 
-            # Bot Oyları
-            for p in alive_players:
-                if p.is_ai:
-                    possible_targets = [t for t in alive_players if t.id != p.id]
-                    if possible_targets:
-                        bot_choice = random.choice(possible_targets)
-                        votes[bot_choice.id] += 1
+        # --- FAZ 3: OYUN BİTTİ (GAME OVER MODAL/EKRAN) ---
+        elif gs['phase'] == 'GAME_OVER':
+            w_team, w_desc = gs.get('winner', ('NONE', ''))
+            st.error(f"🏆 OYUN BİTTİ: {w_team} KAZANDI!")
+            st.write(f"**Özet:** {w_desc}")
 
-        # En çok oy kalanı bulma
-        max_votes = 0
-        lynched_id = None
-        tie = False
+            st.markdown("#### Oyuncu Rolleri Özeti")
+            for p in gs['players']:
+                st.write(f"- **{p['name']}**: {p['role']['name']} ({'CANLI' if p['is_alive'] else 'ÖLÜ'})")
 
-        for pid, count in votes.items():
-            if count > max_votes:
-                max_votes = count
-                lynched_id = pid
-                tie = False
-            elif count == max_votes and max_votes > 0:
-                tie = True
+            if st.button("🎮 Yeni Oyun Başlat", use_container_width=True):
+                gs['phase'] = 'SETUP'
+                st.rerun()
 
-        if lynched_id and not tie:
-            lynched = next(p for p in self.players if p.id == lynched_id)
-            lynched.is_alive = False
-            print(f"\n⚖️️ MAHKEME KARARI: {lynched.name} çoğunluk oyuyla ({max_votes} oy) idam edildi!")
-            print(f"📜 {lynched.name} oyuncusunun gerçek rolü: {lynched.role['name']}")
-
-            # RYUK KAZANMA KONTROLÜ
-            if lynched.role['id'] == 'RYUK':
-                self.trigger_end_game('RYUK', 'Ryuk kendisini astırmayı başardı ve elmasından bir ısırık alarak oyunu TEK BAŞINA kazandı!')
-                return
-        else:
-            print("\n⚖️ Oylar eşit çıktı veya oy kullanılmadı, bugün kimse idam edilmedi.")
-
-        if not self.check_win_conditions():
-            self.night_number += 1
-            input("\nGeceye geçmek için Enter'a basın...")
-            self.start_night_phase()
-
-    # ==========================================================================
-    # 6. KAZANMA KOŞULLARI
-    # ==========================================================================
-    def check_win_conditions(self):
-        alive = [p for p in self.players if p.is_alive]
-        kira_team = [p for p in alive if p.role['team'] == 'KIRA']
-        town_team = [p for p in alive if p.role['team'] in ['TOWN', 'NEUTRAL']]
-
-        # 1. Soruşturma Ekibi Kazandı
-        if len(kira_team) == 0:
-            self.trigger_end_game('TOWN', 'Tüm Kira destekçileri ve Light Yagami etkisiz hale getirildi. Adalet sağlandı!')
-            return True
-
-        # 2. Kira Tarafı Kazandı
-        if len(kira_team) >= len(town_team):
-            self.trigger_end_game('KIRA', 'Kira kasabada tam kontrolü sağladı. Yeni Dünya\'nın Tanrısı doğdu!')
-            return True
-
-        return False
-
-    def trigger_end_game(self, winner_team, description):
-        self.game_over = True
-        print("\n" + "="*60)
-        if winner_team == 'TOWN':
-            print("🏆 ADALET KAZANDI (SORUŞTURMA EKİBİ)")
-        elif winner_team == 'KIRA':
-            print("💀 KIRA KAZANDI!")
-        else:
-            print("🍎 RYUK KAZANDI!")
-        print("="*60)
-        print(f"Özet: {description}\n")
-
-        print("--- OYUNCU ROLLERİ ÖZETİ ---")
-        for p in self.players:
-            status = "CANLI" if p.is_alive else "ÖLÜ"
-            print(f"- {p.name:<18} | Rolü: {p.role['name']:<25} | Taraf: {p.role['team']:<8} | Durum: {status}")
-        print("="*60)
-
-# ==============================================================================
-# OYUNU BAŞLATMA
-# ==============================================================================
-if __name__ == "__main__":
-    game = DeathNoteGame()
-    game.setup_game()
-    game.start_night_phase()
+    # --------------------------------------------------------------------------
+    # SAĞ PANEL: SORUŞTURMA GÜNLÜĞÜ (HTML'deki Notebook Log Yapısı)
+    # --------------------------------------------------------------------------
+    with log_col:
+        st.markdown("#### 📖 Soruşturma Günlüğü")
+        log_html = "<div class='log-box'>"
+        for log in reversed(gs['logs']):
+            log_html += f"<div style='margin-bottom:8px;'>{log}</div>"
+        log_html += "</div>"
+        st.markdown(log_html, unsafe_allow_html=True)
