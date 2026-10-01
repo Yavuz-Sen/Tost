@@ -2,11 +2,10 @@ import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
 import random
-from st_autorun import autorun
+import time
 
 # --- 1. FIREBASE BAĞLANTISI ---
 if not firebase_admin._apps:
-    # Streamlit Secrets/toml üzerindeki textkey yapısından okur
     key_dict = dict(st.secrets["textkey"])
     cred = credentials.Certificate(key_dict)
     firebase_admin.initialize_app(cred)
@@ -14,9 +13,6 @@ if not firebase_admin._apps:
 db = firestore.client()
 
 st.set_page_config(page_title="Vampir Köylü", page_icon="🧛‍♂️", layout="centered")
-
-# Sayfayı 3000 ms (3 saniye) bir otomatik yeniler
-autorun(run_every=3000)
 
 # --- 2. SESSION STATE KONTROLLERİ ---
 if "player_name" not in st.session_state:
@@ -89,6 +85,9 @@ else:
     st.sidebar.markdown(f"**Oyuncu Adı:** {my_name}")
     if my_info.get("role"):
         st.sidebar.info(f"**Rolünüz:** {my_info['role']}")
+
+    if st.sidebar.button("Ekranı Yenile 🔄"):
+        st.rerun()
 
     # LOBİ AŞAMASI
     if status == "LOBBY":
@@ -198,7 +197,7 @@ else:
 
         if is_host:
             st.markdown("---")
-            if st.button("Oylamayı Bitiş Tarihine Çek ve Geceye Geç"):
+            if st.button("Oylamayı Bitir ve Geceye Geç"):
                 votes = {}
                 for p, data in players.items():
                     target = data.get("voted_against")
@@ -224,3 +223,7 @@ else:
                 room_ref.update(updates)
                 room_ref.update({"logs": firestore.ArrayUnion([log_msg])})
                 st.rerun()
+
+    # Sayfayı 4 saniyede bir otomatik yenile (Harici paketsiz)
+    time.sleep(4)
+    st.rerun()
