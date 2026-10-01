@@ -34,11 +34,10 @@ def check_game_over(players):
             else:
                 alive_others += 1
 
-    # Oyun bitiş şartları:
     if alive_vampires == 0:
         return True, "🎉 KÖYLÜLER KAZANDI! Tüm vampirler elendi."
     elif alive_vampires >= alive_others:
-        return True, "🧛‍♂️ VAMPİRLER KAZANDI! Vampir sayısı kalan köylü sayısına ulaştı veya geçti."
+        return True, "🧛‍♂️ VAMPİRLER KAZANDI! Vampirler kasaba hakimiyetini sağladı."
     
     return False, ""
 
@@ -57,8 +56,13 @@ if not st.session_state.room_code:
                     "status": "LOBBY",
                     "host": player_name,
                     "bot_count": 0,
-                    "test_mode": False,
-                    "host_chosen_role": "Köylü",
+                    "settings": {
+                        "reveal_roles": True,
+                        "show_vote_counts": True,
+                        "show_who_voted_whom": True,
+                        "test_mode": False,
+                        "host_chosen_role": "Köylü"
+                    },
                     "players": {
                         player_name: {"role": None, "is_alive": True, "voted_against": None, "is_bot": False}
                     },
@@ -101,6 +105,7 @@ else:
 
     room_data = room_doc.to_dict()
     players = room_data.get("players", {})
+    settings = room_data.get("settings", {})
     my_name = st.session_state.player_name
     my_info = players.get(my_name, {})
     is_host = room_data.get("host") == my_name
@@ -108,7 +113,7 @@ else:
 
     st.sidebar.markdown(f"**Oda Kodu:** `{st.session_state.room_code}`")
     st.sidebar.markdown(f"**Oyuncu Adı:** {my_name}")
-    if room_data.get("test_mode"):
+    if settings.get("test_mode"):
         st.sidebar.warning("🧪 Test Modu Aktif")
     if my_info.get("role"):
         st.sidebar.info(f"**Rolünüz:** {my_info['role']}")
@@ -122,23 +127,32 @@ else:
         st.write("### Katılan Oyuncular:")
         for p_name, p_data in players.items():
             bot_tag = " 🤖 (Bot)" if p_data.get("is_bot") else ""
-            host_tag = " (Oda Kurucusu)" if p_name == room_data['host'] else ""
+            host_tag = " (Kurucu)" if p_name == room_data['host'] else ""
             st.write(f"- {p_name}{bot_tag}{host_tag}")
 
         if is_host:
             st.markdown("---")
-            st.write("### ⚙️ Oda Ayarları (Kurucu Özel)")
+            st.subheader("⚙️ Oda Ayarları (Sadece Kurucu)")
             
-            test_mode = st.checkbox("🧪 Test Modunu Etkinleştir", value=room_data.get("test_mode", False))
-            host_chosen_role = room_data.get("host_chosen_role", "Köylü")
+            reveal_roles = st.checkbox("🎭 Ölen kişinin rolü açıklansın mı?", value=settings.get("reveal_roles", True))
+            show_vote_counts = st.checkbox("📊 Oy sayıları gözüksün mü?", value=settings.get("show_vote_counts", True))
+            show_who_voted_whom = st.checkbox("🔍 Kimin kime oy verdiği gözüksün mü?", value=settings.get("show_who_voted_whom", True))
+            
+            st.markdown("---")
+            test_mode = st.checkbox("🧪 Test Modunu Etkinleştir", value=settings.get("test_mode", False))
+            host_chosen_role = settings.get("host_chosen_role", "Köylü")
             if test_mode:
                 roles_list = ["Vampir", "Doktor", "Gözcü", "Köylü"]
                 idx = roles_list.index(host_chosen_role) if host_chosen_role in roles_list else 3
                 host_chosen_role = st.selectbox("Test Modu Rolünüzü Seçin:", roles_list, index=idx)
 
+            # Ayarları Güncelle
             room_ref.update({
-                "test_mode": test_mode,
-                "host_chosen_role": host_chosen_role
+                "settings.reveal_roles": reveal_roles,
+                "settings.show_vote_counts": show_vote_counts,
+                "settings.show_who_voted_whom": show_who_voted_whom,
+                "settings.test_mode": test_mode,
+                "settings.host_chosen_role": host_chosen_role
             })
 
             st.markdown("---")
@@ -168,8 +182,8 @@ else:
                 player_list = list(players.keys())
                 roles_assignment = {}
 
-                if room_data.get("test_mode"):
-                    h_role = room_data.get("host_chosen_role", "Köylü")
+                if settings.get("test_mode"):
+                    h_role = settings.get("host_chosen_role", "Köylü")
                     roles_assignment[my_name] = h_role
                     
                     other_players = [p for p in player_list if p != my_name]
@@ -196,7 +210,7 @@ else:
                         for p in player_list[2:]:
                             roles_assignment[p] = "Köylü"
 
-                updates = {"status": "NIGHT", "logs": ["Oyun başladı! İlk gece daldı..."]}
+                updates = {"status": "NIGHT", "logs": ["Oyun başladı! Gece çöktü..."]}
                 for p, r in roles_assignment.items():
                     updates[f"players.{p}.role"] = r
                 
@@ -209,12 +223,10 @@ else:
         
         logs = room_data.get("logs", [])
         if logs:
-            st.markdown(f"📋 **Özet:**\n{logs[-1]}")
-
-        st.write("Herkes uykuya daldı...")
+            st.info(logs[-1])
 
         if not my_info.get("is_alive"):
-            st.error("Elendiniz! Şu an izleyici modundasınız.")
+            st.error("Elendiniz! Şu an oyunu izliyorsunuz.")
         else:
             role = my_info.get("role")
             alive_players = [p for p, data in players.items() if data["is_alive"] and p != my_name]
@@ -246,7 +258,7 @@ else:
                     st.info(seer_res)
 
             elif role == "Köylü":
-                st.info("Siz köylüsünüz. Gece hamleniz yok.")
+                st.info("Siz köylüsünüz. Gece vakti yapmanız gereken bir aksiyon yok.")
 
         if is_host:
             st.markdown("---")
@@ -257,7 +269,7 @@ else:
 
                 all_alive = [p for p, data in players.items() if data["is_alive"]]
 
-                # BOT GECE HAMLELERİ (Düzeltildi: Tüm yaşayanlar arasından rastgele seçim)
+                # BOT GECE HAMLELERİ
                 for p_name, p_data in players.items():
                     if p_data["is_alive"] and p_data.get("is_bot"):
                         bot_role = p_data.get("role")
@@ -273,9 +285,10 @@ else:
 
                 if v_target and v_target != d_target:
                     killed_player = v_target
-                    log_msg += f"🩸 Gece **{killed_player}** saldırıya uğradı ve hayatını kaybetti.\n"
+                    role_str = f" ({players[killed_player]['role']})" if settings.get("reveal_roles") else ""
+                    log_msg += f"🩸 Gece **{killed_player}**{role_str} saldırıya uğradı ve öldü.\n"
                 elif v_target and v_target == d_target:
-                    log_msg += f"🛡️ Vampirler birine saldırdı fakat **Doktor** doğru kişiyi koruyarak ölümü engelledi!\n"
+                    log_msg += "🛡️ Doktor doğru kişiyi korudu! Kimse ölmedi.\n"
                 else:
                     log_msg += "🕊️ Gece sakin geçti, kimse zarar görmedi.\n"
 
@@ -303,29 +316,23 @@ else:
     elif status == "DAY":
         st.subheader("☀️ Gündüz Oldu")
         
-        # İYİLEŞTİRİLMİŞ ÖZET PANOLARI
         logs = room_data.get("logs", [])
         if logs:
             st.info(logs[-1])
 
-        st.write("### 👥 Oyuncu Durumları:")
-        col_alive, col_dead = st.columns(2)
-        with col_alive:
+        st.write("### 👥 Oyuncular:")
+        col_a, col_d = st.columns(2)
+        with col_a:
             st.markdown("**🟢 Hayattakiler:**")
             for p, data in players.items():
                 if data["is_alive"]:
-                    bot_tag = " 🤖" if data.get("is_bot") else ""
-                    st.write(f"- {p}{bot_tag}")
-        with col_dead:
+                    st.write(f"- {p}" + (" 🤖" if data.get("is_bot") else ""))
+        with col_d:
             st.markdown("**💀 Ölenler:**")
-            dead_exists = False
             for p, data in players.items():
                 if not data["is_alive"]:
-                    dead_exists = True
-                    bot_tag = " 🤖" if data.get("is_bot") else ""
-                    st.write(f"- ~{p}~{bot_tag}")
-            if not dead_exists:
-                st.caption("Henüz ölen yok.")
+                    role_str = f" ({data.get('role')})" if settings.get("reveal_roles") else ""
+                    st.write(f"- ~{p}~{role_str}")
 
         st.markdown("---")
         if my_info.get("is_alive"):
@@ -337,14 +344,14 @@ else:
                 room_ref.update({f"players.{my_name}.voted_against": vote_target})
                 st.success(f"Oyunuz ({vote_target}) kaydedildi.")
         else:
-            st.warning("Ölü olduğunuz için oylamaya katılamazsınız.")
+            st.warning("Ölü olduğunuz için oy kullanamazsınız.")
 
         if is_host:
             st.markdown("---")
-            if st.button("Oylamayı Bitişini Onayla ve Geceye Geç", type="primary"):
+            if st.button("Oylamayı Bitir ve Geceye Geç", type="primary"):
                 all_alive = [p for p, data in players.items() if data["is_alive"]]
 
-                # BOT OYLARI (Düzeltildi: Tüm yaşayanlar arasından rastgele seçim)
+                # BOT OYLARI
                 for p_name, p_data in players.items():
                     if p_data["is_alive"] and p_data.get("is_bot"):
                         targets = [p for p in all_alive if p != p_name]
@@ -355,7 +362,7 @@ else:
                 updated_room = room_ref.get().to_dict()
                 updated_players = updated_room.get("players", {})
 
-                # OYLARI HESAPLA VE DETAYLI ÖZET OLUŞTUR
+                # OYLARI HESAPLA VE AYARLARA GÖRE METİN OLUŞTUR
                 votes_received = {}
                 voter_details = []
 
@@ -372,22 +379,23 @@ else:
                     if len(top_candidates) == 1:
                         eliminated_player = top_candidates[0]
 
-                # ÖZET METNİNİ OLUŞTUR
-                summary_lines = ["📊 **OYLAMA ÖZETİ**", "---"]
-                if voter_details:
-                    summary_lines.append("**Verilen Oylar:**")
+                # AYARLARA GÖRE ÖZET ÇIKAR
+                summary_lines = ["📊 **Oylama Sonucu**"]
+
+                if settings.get("show_who_voted_whom") and voter_details:
+                    summary_lines.append("\n**Kimin Kime Oy Verdiği:**")
                     summary_lines.extend(voter_details)
+
+                if settings.get("show_vote_counts") and votes_received:
                     summary_lines.append("\n**Oy Sayıları:**")
                     for t_p, count in votes_received.items():
                         summary_lines.append(f"• **{t_p}**: {count} oy")
-                else:
-                    summary_lines.append("Kimse oy kullanmadı.")
 
-                summary_lines.append("---")
                 if eliminated_player:
-                    summary_lines.append(f"🔥 En çok oyu alan **{eliminated_player}** kasabadan sürüldü!")
+                    role_str = f" ({updated_players[eliminated_player].get('role')})" if settings.get("reveal_roles") else ""
+                    summary_lines.append(f"\n🔥 En çok oyu alan **{eliminated_player}**{role_str} kasabadan sürüldü!")
                 else:
-                    summary_lines.append("⚖️ Eşitlik veya oy kullanılmaması nedeniyle kimse elenmedi.")
+                    summary_lines.append("\n⚖️ Eşitlik nedeniyle kimse elenmedi.")
 
                 updates = {"status": "NIGHT"}
                 
