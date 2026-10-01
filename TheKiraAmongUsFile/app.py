@@ -2,481 +2,284 @@ import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
 import random
-import time
+import json
 
-# --- 1. FIREBASE BAĞLANTISI ---
-if not firebase_admin._apps:
-    key_dict = dict(st.secrets["textkey"])
-    cred = credentials.Certificate(key_dict)
-    firebase_admin.initialize_app(cred)
+# ---------------------------------------------------------
+# 1. FIREBASE INITIALIZATION
+# ---------------------------------------------------------
+@st.cache_resource
+def init_firebase():
+    if not firebase_admin._apps:
+        # secrets.toml dosyasından bilgileri al
+        key_dict = dict(st.secrets["textkey"])
+        cred = credentials.Certificate(key_dict)
+        firebase_admin.initialize_app(cred)
+    return firestore.client()
 
-db = firestore.client()
+db = init_firebase()
 
-st.set_page_config(page_title="Vampir Köylü", page_icon="🧛‍♂️", layout="centered")
+st.set_page_config(page_title="Vampir Köylü", page_icon="🐺", layout="centered")
 
-# --- 2. SESSION STATE KONTROLLERİ ---
-if "player_name" not in st.session_state:
-    st.session_state.player_name = ""
+# ---------------------------------------------------------
+# 2. SESSION STATE MANAGEMENT
+# ---------------------------------------------------------
 if "room_code" not in st.session_state:
-    st.session_state.room_code = ""
+    st.session_state.room_code = None
+if "player_name" not in st.session_state:
+    st.session_state.player_name = None
 
-st.title("🧛‍♂️ Vampir Köylü")
+st.title("🐺 Vampir Köylü (Mafia)")
 
-# --- YARDIMCI FONKSİYON: KAZANMA KONTROLÜ ---
-def check_game_over(players):
-    alive_vampires = sum(1 for p in players.values() if p.get("is_alive") and p.get("role") == "Vampir")
-    alive_others = sum(1 for p in players.values() if p.get("is_alive") and p.get("role") != "Vampir")
-
-    if alive_vampires == 0:
-        return True, "🎉 KÖYLÜLER KAZANDI! Tüm vampirler elendi."
-    elif alive_vampires >= alive_others:
-        return True, "🧛‍♂️ VAMPİRLER KAZANDI! Vampirler kasaba hakimiyetini sağladı."
-    
-    return False, ""
-
-# --- 3. LOBİ / KATILIM EKRANI ---
+# ---------------------------------------------------------
+# 3. LOBBY / ROOM CREATION
+# ---------------------------------------------------------
 if not st.session_state.room_code:
-    st.subheader("Giriş Yap")
-    player_name = st.text_input("Oyuncu Adınız:", key="input_name")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        new_room = st.text_input("Oluşturulacak Oda Kodu:", key="input_create")
-        if st.button("Oda Oluştur"):
-            if player_name and new_room:
-                room_ref = db.collection("rooms").document(new_room)
-                room_ref.set({
-                    "status": "LOBBY",
-                    "host": player_name,
-                    "bot_count": 0,
-                    "settings": {
-                        "reveal_roles": True,
-                        "show_vote_counts": True,
-                        "show_who_voted_whom": True,
-                        "test_mode": False,
-                        "host_chosen_role": "Köylü"
-                    },
-                    "players": {
-                        player_name: {"role": None, "is_alive": True, "voted_against": None, "is_bot": False}
-                    },
-                    "night_actions": {"vampire_target": None, "doctor_target": None, "seer_target": None},
-                    "seer_result": None,
-                    "messages": [],
-                    "latest_log": "Oda oluşturuldu. Oyuncular bekleniyor..."
-                })
-                st.session_state.room_code = new_room
-                st.session_state.player_name = player_name
-                st.rerun()
-            else:
-                st.warning("Ad ve oda kodu doldurulmalıdır.")
+    tab1, tab2 = st.tabs(["Odaya Katıl", "Yeni Oda Oluştur"])
 
-    with col2:
-        join_room = st.text_input("Katılınacak Oda Kodu:", key="input_join")
-        if st.button("Odaya Katıl"):
-            if player_name and join_room:
-                room_ref = db.collection("rooms").document(join_room)
-                room = room_ref.get()
-                if room.exists:
-                    room_ref.update({
-                        f"players.{player_name}": {"role": None, "is_alive": True, "voted_against": None, "is_bot": False}
-                    })
-                    st.session_state.room_code = join_room
-                    st.session_state.player_name = player_name
-                    st.rerun()
+    with tab1:
+        with st.form("join_form"):
+            name_input = st.text_input("Kullanıcı Adınız")
+            code_input = st.text_input("Oda Kodu (6 Haneli)").upper()
+            submit_join = st.form_submit_button("Odaya Katıl")
+
+            if submit_join and name_input and code_input:
+                doc_ref = db.collection("games").document(code_input)
+                doc = doc_ref.get()
+                if doc.exists:
+                    game_data = doc.to_dict()
+                    if name_input in game_data["players"]:
+                        st.error("Bu isimde bir oyuncu zaten var.")
+                    elif game_data["status"] != "lobby":
+                        st.error("Bu oyun zaten başladı.")
+                    else:
+                        # Oyuncuyu ekle
+                        game_data["players"][name_input] = {"role": "Bilinmiyor", "alive": True}
+                        doc_ref.update({"players": game_data["players"]})
+                        st.session_state.room_code = code_input
+                        st.session_state.player_name = name_input
+                        st.rerun()
                 else:
                     st.error("Oda bulunamadı!")
 
-# --- 4. OYUN EKRANI ---
+    with tab2:
+        with st.form("create_form"):
+            host_name = st.text_input("Kurucu Adı")
+            submit_create = st.form_submit_button("Oda Oluştur")
+
+            if submit_create and host_name:
+                room_code = str(random.randint(100000, 999999))
+                game_data = {
+                    "host": host_name,
+                    "status": "lobby",  # status: lobby, night, day
+                    "players": {
+                        host_name: {"role": "Bilinmiyor", "alive": True}
+                    },
+                    "votes": {},
+                    "logs": ["Oda oluşturuldu."]
+                }
+                db.collection("games").document(room_code).set(game_data)
+                st.session_state.room_code = room_code
+                st.session_state.player_name = host_name
+                st.rerun()
+
+# ---------------------------------------------------------
+# 4. GAME ENGINE & ROOM LOGIC
+# ---------------------------------------------------------
 else:
-    room_ref = db.collection("rooms").document(st.session_state.room_code)
-    room_doc = room_ref.get()
-    
-    if not room_doc.exists:
-        st.error("Oda bulunamadı veya kapatıldı.")
-        st.session_state.room_code = ""
-        st.session_state.player_name = ""
+    room_code = st.session_state.room_code
+    player_name = st.session_state.player_name
+    doc_ref = db.collection("games").document(room_code)
+    game_doc = doc_ref.get()
+
+    if not game_doc.exists:
+        st.error("Oda kapatıldı veya bulunamadı.")
+        if st.button("Ana Sayfaya Dön"):
+            st.session_state.room_code = None
+            st.session_state.player_name = None
+            st.rerun()
+        st.stop()
+
+    game = game_doc.to_dict()
+    is_host = (game["host"] == player_name)
+
+    # Üst Bilgi Paneli
+    st.sidebar.title(f"Oda Kodu: `{room_code}`")
+    st.sidebar.write(f"**Oyuncu:** {player_name}")
+    if is_host:
+        st.sidebar.success("👑 Oda Yöneticisisiniz")
+
+    if st.sidebar.button("Yenile 🔄"):
         st.rerun()
 
-    room_data = room_doc.to_dict()
-    players = room_data.get("players", {})
-    
-    # --- ODA BOŞSA VEYA SADECE BOTLAR KALDIYSA SİL ---
-    real_players = [p for p, data in players.items() if not data.get("is_bot")]
-    if len(real_players) == 0:
-        room_ref.delete()
-        st.session_state.room_code = ""
-        st.session_state.player_name = ""
+    if st.sidebar.button("Oıdadan Ayrıl 🚪"):
+        if player_name in game["players"]:
+            del game["players"][player_name]
+            doc_ref.update({"players": game["players"]})
+        st.session_state.room_code = None
+        st.session_state.player_name = None
         st.rerun()
 
-    settings = room_data.get("settings", {})
-    my_name = st.session_state.player_name
-    my_info = players.get(my_name, {})
-    is_host = room_data.get("host") == my_name
-    status = room_data.get("status")
+    # -----------------------------------------------------
+    # EKRAN 1: LOBİ (LOBBY)
+    # -----------------------------------------------------
+    if game["status"] == "lobby":
+        st.subheader("📋 Lobi")
+        st.write("Oyuncular bekleniyor...")
 
-    st.sidebar.markdown(f"**Oda Kodu:** `{st.session_state.room_code}`")
-    st.sidebar.markdown(f"**Oyuncu Adı:** {my_name}")
-    if settings.get("test_mode"):
-        st.sidebar.warning("🧪 Test Modu Aktif")
-    if my_info.get("role"):
-        st.sidebar.info(f"**Rolünüz:** {my_info['role']}")
-
-    if st.sidebar.button("Odadan Ayrıl 🚪"):
-        # Oyuncuyu odadan çıkar
-        room_ref.update({f"players.{my_name}": firestore.DELETE_FIELD})
-        
-        # Eğer çıkan kişi host ise yeni host ata veya odayı sil
-        remaining_real = [p for p, d in players.items() if p != my_name and not d.get("is_bot")]
-        if not remaining_real:
-            room_ref.delete()
-        elif is_host:
-            room_ref.update({"host": remaining_real[0]})
-
-        st.session_state.room_code = ""
-        st.session_state.player_name = ""
-        st.rerun()
-
-    if st.sidebar.button("Ekranı Yenile 🔄"):
-        st.rerun()
-
-    # --- DURUM 1: LOBİ ---
-    if status == "LOBBY":
-        st.subheader("Oda Lobisi")
-        st.write("### Katılan Oyuncular:")
-        for p_name, p_data in players.items():
-            bot_tag = " 🤖 (Bot)" if p_data.get("is_bot") else ""
-            host_tag = " (Kurucu)" if p_name == room_data['host'] else ""
-            st.write(f"- {p_name}{bot_tag}{host_tag}")
+        players_list = list(game["players"].keys())
+        st.write("**Katılan Oyuncular:**", ", ".join(players_list))
 
         if is_host:
-            st.markdown("---")
-            st.subheader("⚙️ Oda Ayarları (Sadece Kurucu)")
-            
-            reveal_roles = st.checkbox("🎭 Ölen kişinin rolü açıklansın mı?", value=settings.get("reveal_roles", True))
-            show_vote_counts = st.checkbox("📊 Oy sayıları gözüksün mü?", value=settings.get("show_vote_counts", True))
-            show_who_voted_whom = st.checkbox("🔍 Kimin kime oy verdiği gözüksün mü?", value=settings.get("show_who_voted_whom", True))
-            
-            st.markdown("---")
-            test_mode = st.checkbox("🧪 Test Modunu Etkinleştir", value=settings.get("test_mode", False))
-            host_chosen_role = settings.get("host_chosen_role", "Köylü")
-            if test_mode:
-                roles_list = ["Vampir", "Doktor", "Gözcü", "Köylü"]
-                idx = roles_list.index(host_chosen_role) if host_chosen_role in roles_list else 3
-                host_chosen_role = st.selectbox("Test Modu Rolünüzü Seçin:", roles_list, index=idx)
+            st.divider()
+            st.subheader("Oyun Ayarları & Başlatma")
+            num_vampires = st.number_input("Vampir Sayısı", min_value=1, max_value=max(1, len(players_list)-1), value=1)
+            num_doctors = st.number_input("Doktor Sayısı", min_value=0, max_value=1, value=1 if len(players_list) > 3 else 0)
 
-            room_ref.update({
-                "settings.reveal_roles": reveal_roles,
-                "settings.show_vote_counts": show_vote_counts,
-                "settings.show_who_voted_whom": show_who_voted_whom,
-                "settings.test_mode": test_mode,
-                "settings.host_chosen_role": host_chosen_role
-            })
+            if st.button("Oyunu Başlat 🚀", type="primary"):
+                if len(players_list) < 3:
+                    st.warning("Oyunu başlatmak için en az 3 oyuncu gereklidir!")
+                else:
+                    # Rol Dağıtımı
+                    roles = ["Vampir"] * num_vampires + ["Doktor"] * num_doctors
+                    roles += ["Köylü"] * (len(players_list) - len(roles))
+                    random.shuffle(roles)
 
-            st.markdown("---")
-            st.write("### 🤖 Bot Ekle")
-            bot_col1, bot_col2 = st.columns([2, 1])
-            with bot_col1:
-                custom_bot_name = st.text_input("Bot İsmi (İsteğe Bağlı):", key="bot_name_input")
-            with bot_col2:
-                st.write("")
-                st.write("") 
-                if st.button("Botu Ekle"):
-                    bot_count = room_data.get("bot_count", 0) + 1
-                    bot_name = custom_bot_name.strip() if custom_bot_name.strip() else f"Bot_{bot_count}"
-                    if bot_name in players:
-                        st.error("Bu isimde bir oyuncu zaten var!")
+                    updated_players = {}
+                    for i, p_name in enumerate(players_list):
+                        updated_players[p_name] = {
+                            "role": roles[i],
+                            "alive": True
+                        }
+
+                    doc_ref.update({
+                        "status": "night",
+                        "players": updated_players,
+                        "logs": game.get("logs", []) + ["Oyun başladı! Gece oldu... 🌙"]
+                    })
+                    st.rerun()
+
+    # -----------------------------------------------------
+    # EKRAN 2 & 3: GECE / GÜNDÜZ EVRELERİ
+    # -----------------------------------------------------
+    else:
+        player_info = game["players"].get(player_name, {})
+        is_alive = player_info.get("alive", False)
+        role = player_info.get("role", "Bilinmiyor")
+
+        # Rol Kartı
+        st.info(f"**Gizli Rolünüz:** {role}" if is_alive else "☠️ **Elendiniz (Ölüsünüz)**")
+
+        st.divider()
+
+        # OYUN DURUMU: GECE
+        if game["status"] == "night":
+            st.header("🌙 Gece Fazı")
+            st.write("Şehir uyuyor... Özel roller eylemlerini seçiyor.")
+
+            if is_alive:
+                if role == "Vampir":
+                    st.subheader("🎯 Kimi avlamak istiyorsun?")
+                    targets = [p for p, data in game["players"].items() if data["alive"] and data["role"] != "Vampir"]
+                    target = st.radio("Hedef Seç:", targets, key="vampire_target")
+                    if st.button("Saldır"):
+                        votes = game.get("votes", {})
+                        votes["vampire_target"] = target
+                        doc_ref.update({"votes": votes})
+                        st.success(f"{target} hedeflendi.")
+
+                elif role == "Doktor":
+                    st.subheader("🛡️ Kimi korumak istiyorsun?")
+                    targets = [p for p, data in game["players"].items() if data["alive"]]
+                    target = st.radio("Hedef Seç:", targets, key="doctor_target")
+                    if st.button("Koru"):
+                        votes = game.get("votes", {})
+                        votes["doctor_target"] = target
+                        doc_ref.update({"votes": votes})
+                        st.success(f"{target} koruma altına alındı.")
+
+                elif role == "Köylü":
+                    st.write("Köylüsünüz, gece yapacak bir eyleminiz yok. Gece bitimini bekleyin.")
+
+            # Geceyi Bitirme (Sadece Host)
+            if is_host:
+                st.divider()
+                if st.button("Gündüze Geç ☀️"):
+                    votes = game.get("votes", {})
+                    vampire_target = votes.get("vampire_target")
+                    doctor_target = votes.get("doctor_target")
+
+                    log_entry = ""
+                    players = game["players"]
+
+                    if vampire_target and vampire_target != doctor_target:
+                        players[vampire_target]["alive"] = False
+                        log_entry = f"☀️ Sabah oldu. Dün gece {vampire_target} saldırıya uğradı ve öldü!"
                     else:
-                        room_ref.update({
-                            f"players.{bot_name}": {"role": None, "is_alive": True, "voted_against": None, "is_bot": True},
-                            "bot_count": bot_count
-                        })
-                        st.rerun()
+                        log_entry = "☀️ Sabah oldu. Dün gece kimse ölmedi!"
 
-            st.markdown("---")
-            if len(players) < 3:
-                st.warning("Oyunu başlatabilmek için en az 3 oyuncu gereklidir.")
-            elif st.button("Oyunu Başlat (Rolleri Dağıt)", type="primary"):
-                player_list = list(players.keys())
-                roles_assignment = {}
+                    doc_ref.update({
+                        "status": "day",
+                        "players": players,
+                        "votes": {},  # Oyları sıfırla
+                        "logs": game.get("logs", []) + [log_entry]
+                    })
+                    st.rerun()
 
-                if settings.get("test_mode"):
-                    h_role = settings.get("host_chosen_role", "Köylü")
-                    roles_assignment[my_name] = h_role
-                    
-                    other_players = [p for p in player_list if p != my_name]
-                    random.shuffle(other_players)
-                    
-                    pool = ["Vampir", "Doktor", "Gözcü", "Köylü", "Köylü"]
-                    if h_role in pool:
-                        pool.remove(h_role)
-                    
-                    for p in other_players:
-                        roles_assignment[p] = pool.pop(0) if pool else "Köylü"
-                else:
-                    # RASTGELE ROL DAĞILIMI DÜZELTMESİ:
-                    # Tüm oyuncu listesi karıştırılıyor, kurucuya öncelik verilmiyor.
-                    shuffled_players = list(player_list)
-                    random.shuffle(shuffled_players)
+        # OYUN DURUMU: GÜNDÜZ
+        elif game["status"] == "day":
+            st.header("☀️ Gündüz Fazı")
+            st.write("Tartışın ve şüphelendiğiniz kişiyi oylayın.")
 
-                    roles_pool = ["Vampir", "Doktor"]
-                    if len(shuffled_players) >= 4:
-                        roles_pool.append("Gözcü")
-                    
-                    while len(roles_pool) < len(shuffled_players):
-                        roles_pool.append("Köylü")
-                    
-                    random.shuffle(roles_pool)
-
-                    for p, r in zip(shuffled_players, roles_pool):
-                        roles_assignment[p] = r
-
-                updates = {
-                    "status": "NIGHT",
-                    "latest_log": "🌙 Oyun başladı! Gece çöktü..."
-                }
-                for p, r in roles_assignment.items():
-                    updates[f"players.{p}.role"] = r
+            if is_alive:
+                st.subheader("🗳️ Oylama")
+                targets = [p for p, data in game["players"].items() if data["alive"] and p != player_name]
+                vote_target = st.radio("Sürgün etmek istediğin kişi:", targets, key="day_vote")
                 
-                room_ref.update(updates)
-                st.rerun()
+                if st.button("Oy Ver"):
+                    votes = game.get("votes", {})
+                    votes[player_name] = vote_target
+                    doc_ref.update({"votes": votes})
+                    st.success(f"{vote_target} için oy kullandınız.")
 
-    # --- DURUM 2: GECE FAZI ---
-    elif status == "NIGHT":
-        st.subheader("🌙 Gece Oldu")
-        
-        latest_log = room_data.get("latest_log")
-        if latest_log:
-            st.info(latest_log)
+            # Oylamayı Sonlandırma (Sadece Host)
+            if is_host:
+                st.divider()
+                if st.button("Oylamayı Bitir ve Geceye Geç 🌙"):
+                    votes = game.get("votes", {})
+                    
+                    if votes:
+                        # En çok oy kalanı bul
+                        from collections import Counter
+                        vote_counts = Counter(votes.values())
+                        eliminated = vote_counts.most_common(1)[0][0]
 
-        if not my_info.get("is_alive"):
-            st.error("Elendiniz! Şu an oyunu izliyorsunuz.")
-        else:
-            role = my_info.get("role")
-            alive_players = [p for p, data in players.items() if data["is_alive"] and p != my_name]
+                        players = game["players"]
+                        players[eliminated]["alive"] = False
+                        log_entry = f"🌙 Oylama sonucunda {eliminated} köyden sürgün edildi!"
+                    else:
+                        log_entry = "🌙 Oylamada kimse seçilmedi."
 
-            if role == "Vampir":
-                st.write("### 🧛‍♂️ Vampir Hamlesi")
-                target = st.radio("Saldırmak istediğiniz kişi:", alive_players, key="vampire_choice")
-                if st.button("Hedefi Onayla"):
-                    room_ref.update({"night_actions.vampire_target": target})
-                    st.success(f"{target} hedef seçildi.")
+                    doc_ref.update({
+                        "status": "night",
+                        "players": players,
+                        "votes": {},
+                        "logs": game.get("logs", []) + [log_entry]
+                    })
+                    st.rerun()
 
-            elif role == "Doktor":
-                st.write("### 🩺 Doktor Hamlesi")
-                target = st.radio("Korumak istediğiniz kişi:", list(players.keys()), key="doctor_choice")
-                if st.button("Korumayı Onayla"):
-                    room_ref.update({"night_actions.doctor_target": target})
-                    st.success(f"{target} korumaya alındı.")
+        # -----------------------------------------------------
+        # OYUN GÜNLÜĞÜ VE YAŞAYANLAR
+        # -----------------------------------------------------
+        st.divider()
+        col1, col2 = st.columns(2)
 
-            elif role == "Gözcü":
-                st.write("### 🔮 Gözcü Hamlesi")
-                target = st.radio("Rolünü öğrenmek istediğiniz kişi:", alive_players, key="seer_choice")
-                if st.button("Görü Al"):
-                    target_role = players.get(target, {}).get("role", "Bilinmiyor")
-                    room_ref.update({"seer_result": f"🔮 {target} kişisinin rolü: **{target_role}**"})
-                    st.success("Görü alındı!")
-                
-                seer_res = room_data.get("seer_result")
-                if seer_res:
-                    st.info(seer_res)
+        with col1:
+            st.subheader("📜 Oyun Günlüğü")
+            for log in reversed(game.get("logs", [])):
+                st.write(f"- {log}")
 
-            elif role == "Köylü":
-                st.info("Siz köylüsünüz. Gece vakti yapmanız gereken bir aksiyon yok.")
-
-        if is_host:
-            st.markdown("---")
-            if st.button("Sabahı Başlat"):
-                actions = room_data.get("night_actions", {})
-                v_target = actions.get("vampire_target")
-                d_target = actions.get("doctor_target")
-
-                all_alive = [p for p, data in players.items() if data["is_alive"]]
-
-                # BOT GECE HAMLELERİ
-                for p_name, p_data in players.items():
-                    if p_data["is_alive"] and p_data.get("is_bot"):
-                        bot_role = p_data.get("role")
-                        if bot_role == "Vampir" and not v_target:
-                            possible_targets = [p for p in all_alive if p != p_name]
-                            if possible_targets:
-                                v_target = random.choice(possible_targets)
-                        elif bot_role == "Doktor" and not d_target:
-                            d_target = random.choice(all_alive)
-
-                killed_player = None
-                log_msg = "☀️ **Sabah Oldu!**\n\n"
-
-                if v_target and v_target != d_target:
-                    killed_player = v_target
-                    role_str = f" ({players[killed_player]['role']})" if settings.get("reveal_roles") else ""
-                    log_msg += f"🩸 Gece **{killed_player}**{role_str} saldırıya uğradı ve öldü.\n"
-                elif v_target and v_target == d_target:
-                    log_msg += "🛡️ Doktor doğru kişiyi korudu! Kimse ölmedi.\n"
-                else:
-                    log_msg += "🕊️ Gece sakin geçti, kimse zarar görmedi.\n"
-
-                updates = {
-                    "status": "DAY",
-                    "night_actions": {"vampire_target": None, "doctor_target": None, "seer_target": None},
-                    "seer_result": None,
-                    "latest_log": log_msg
-                }
-                
-                temp_players = dict(players)
-                if killed_player:
-                    updates[f"players.{killed_player}.is_alive"] = False
-                    temp_players[killed_player]["is_alive"] = False
-
-                is_over, result_msg = check_game_over(temp_players)
-                if is_over:
-                    updates["status"] = "GAME_OVER"
-                    updates["latest_log"] += f"\n🏆 **{result_msg}**"
-
-                room_ref.update(updates)
-                st.rerun()
-
-    # --- DURUM 3: GÜNDÜZ FAZI ---
-    elif status == "DAY":
-        st.subheader("☀️ Gündüz Oldu")
-        
-        latest_log = room_data.get("latest_log")
-        if latest_log:
-            st.info(latest_log)
-
-        st.write("### 👥 Oyuncular:")
-        col_a, col_d = st.columns(2)
-        with col_a:
-            st.markdown("**🟢 Hayattakiler:**")
-            for p, data in players.items():
-                if data["is_alive"]:
-                    st.write(f"- {p}" + (" 🤖" if data.get("is_bot") else ""))
-        with col_d:
-            st.markdown("**💀 Ölenler:**")
-            for p, data in players.items():
-                if not data["is_alive"]:
-                    role_str = f" ({data.get('role')})" if settings.get("reveal_roles") else ""
-                    st.write(f"- ~{p}~{role_str}")
-
-        st.markdown("---")
-        if my_info.get("is_alive"):
-            st.write("### 🗳️ Oylama")
-            candidates = [p for p, data in players.items() if data["is_alive"] and p != my_name]
-            vote_target = st.selectbox("Kasabadan sürülmesini istediğiniz kişi:", candidates)
-            
-            if st.button("Oyunuzu Verin"):
-                room_ref.update({f"players.{my_name}.voted_against": vote_target})
-                st.success(f"Oyunuz ({vote_target}) kaydedildi.")
-        else:
-            st.warning("Ölü olduğunuz için oy kullanamazsınız.")
-
-        if is_host:
-            st.markdown("---")
-            if st.button("Oylamayı Bitir ve Geceye Geç", type="primary"):
-                all_alive = [p for p, data in players.items() if data["is_alive"]]
-
-                # BOT OYLARI
-                for p_name, p_data in players.items():
-                    if p_data["is_alive"] and p_data.get("is_bot"):
-                        targets = [p for p in all_alive if p != p_name]
-                        if targets:
-                            bot_vote = random.choice(targets)
-                            room_ref.update({f"players.{p_name}.voted_against": bot_vote})
-
-                updated_room = room_ref.get().to_dict()
-                updated_players = updated_room.get("players", {})
-
-                votes_received = {}
-                voter_details = []
-
-                for p, data in updated_players.items():
-                    target = data.get("voted_against")
-                    if target and updated_players.get(p, {}).get("is_alive"):
-                        votes_received[target] = votes_received.get(target, 0) + 1
-                        voter_details.append(f"• **{p}** ➡️ **{target}**")
-
-                eliminated_player = None
-                if votes_received:
-                    max_votes = max(votes_received.values())
-                    top_candidates = [p for p, count in votes_received.items() if count == max_votes]
-                    if len(top_candidates) == 1:
-                        eliminated_player = top_candidates[0]
-
-                summary_lines = ["📊 **Oylama Sonucu**"]
-
-                if settings.get("show_who_voted_whom") and voter_details:
-                    summary_lines.append("\n**Kimin Kime Oy Verdiği:**")
-                    summary_lines.extend(voter_details)
-
-                if settings.get("show_vote_counts") and votes_received:
-                    summary_lines.append("\n**Oy Sayıları:**")
-                    for t_p, count in votes_received.items():
-                        summary_lines.append(f"• **{t_p}**: {count} oy")
-
-                if eliminated_player:
-                    role_str = f" ({updated_players[eliminated_player].get('role')})" if settings.get("reveal_roles") else ""
-                    summary_lines.append(f"\n🔥 En çok oyu alan **{eliminated_player}**{role_str} kasabadan sürüldü!")
-                else:
-                    summary_lines.append("\n⚖️ Eşitlik nedeniyle kimse elenmedi.")
-
-                updates = {"status": "NIGHT"}
-                
-                if eliminated_player:
-                    updates[f"players.{eliminated_player}.is_alive"] = False
-                    updated_players[eliminated_player]["is_alive"] = False
-
-                for p in updated_players.keys():
-                    updates[f"players.{p}.voted_against"] = None
-
-                is_over, result_msg = check_game_over(updated_players)
-                if is_over:
-                    updates["status"] = "GAME_OVER"
-                    summary_lines.append(f"\n🏆 **{result_msg}**")
-
-                updates["latest_log"] = "\n".join(summary_lines)
-                room_ref.update(updates)
-                st.rerun()
-
-    # --- DURUM 4: OYUN BİTTİ ---
-    elif status == "GAME_OVER":
-        st.subheader("🏆 Oyun Bitti!")
-        latest_log = room_data.get("latest_log")
-        if latest_log:
-            st.success(latest_log)
-
-        st.write("### 📜 Tüm Oyuncular ve Rolleri:")
-        for p, data in players.items():
-            status_str = "🟢 Hayatta" if data.get("is_alive") else "💀 Ölü"
-            st.write(f"- **{p}**: {data.get('role', 'Bilinmiyor')} ({status_str})")
-
-        if is_host:
-            st.markdown("---")
-            if st.button("Lobiye Dön"):
-                room_ref.update({
-                    "status": "LOBBY",
-                    "latest_log": "Yeni oyun için lobiye dönüldü."
-                })
-                st.rerun()
-
-    # --- SOHBET / CHAT MODÜLÜ ---
-    st.markdown("---")
-    st.subheader("💬 Kasaba Sohbeti")
-    
-    messages = room_data.get("messages", [])
-    chat_container = st.container()
-    
-    with chat_container:
-        for msg in messages[-10:]:
-            st.text(f"{msg['sender']}: {msg['text']}")
-
-    col_chat1, col_chat2 = st.columns([4, 1])
-    with col_chat1:
-        new_msg = st.text_input("Mesajınız:", key="chat_input", label_visibility="collapsed")
-    with col_chat2:
-        if st.button("Gönder"):
-            if new_msg.strip():
-                msg_data = {"sender": my_name, "text": new_msg.strip()}
-                room_ref.update({"messages": firestore.ArrayUnion([msg_data])})
-                st.rerun()
-
-    time.sleep(4)
-    st.rerun()
+        with col2:
+            st.subheader("👥 Oyuncu Durumları")
+            for p, data in game["players"].items():
+                status_icon = "🟢 Yaşıyor" if data["alive"] else "🔴 Ölü"
+                st.write(f"- **{p}**: {status_icon}")
