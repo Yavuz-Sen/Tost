@@ -49,12 +49,6 @@ if not st.session_state.room_code:
     col1, col2 = st.columns(2)
     with col1:
         new_room = st.text_input("Oluşturulacak Oda Kodu:", key="input_create")
-        test_mode = st.checkbox("🧪 Test Modu (Kendi rolünü seç)")
-        
-        my_custom_role = "Köylü"
-        if test_mode:
-            my_custom_role = st.selectbox("Test Modu Rolünüz:", ["Vampir", "Doktor", "Gözcü", "Köylü"])
-
         if st.button("Oda Oluştur"):
             if player_name and new_room:
                 room_ref = db.collection("rooms").document(new_room)
@@ -62,13 +56,14 @@ if not st.session_state.room_code:
                     "status": "LOBBY",
                     "host": player_name,
                     "bot_count": 0,
-                    "test_mode": test_mode,
-                    "host_chosen_role": my_custom_role if test_mode else None,
+                    "test_mode": False,
+                    "host_chosen_role": "Köylü",
                     "players": {
                         player_name: {"role": None, "is_alive": True, "voted_against": None, "is_bot": False}
                     },
                     "night_actions": {"vampire_target": None, "doctor_target": None, "seer_target": None},
                     "seer_result": None,
+                    "messages": [],
                     "logs": ["Oda oluşturuldu. Oyuncular bekleniyor..."]
                 })
                 st.session_state.room_code = new_room
@@ -131,12 +126,26 @@ else:
 
         if is_host:
             st.markdown("---")
+            st.write("### ⚙️ Oda Ayarları (Kurucu Özel)")
+            
+            # LOBİDE TEST MODU SEÇENEĞİ
+            test_mode = st.checkbox("🧪 Test Modunu Etkinleştir", value=room_data.get("test_mode", False))
+            host_chosen_role = room_data.get("host_chosen_role", "Köylü")
+            if test_mode:
+                host_chosen_role = st.selectbox("Test Modu Rolünüzü Seçin:", ["Vampir", "Doktor", "Gözcü", "Köylü"], index=["Vampir", "Doktor", "Gözcü", "Köylü"].index(host_chosen_role if host_chosen_role in ["Vampir", "Doktor", "Gözcü", "Köylü"] else "Köylü"))
+
+            room_ref.update({
+                "test_mode": test_mode,
+                "host_chosen_role": host_chosen_role
+            })
+
+            st.markdown("---")
             st.write("### 🤖 Bot Ekle")
             bot_col1, bot_col2 = st.columns([2, 1])
             with bot_col1:
                 custom_bot_name = st.text_input("Bot İsmi (İsteğe Bağlı):", key="bot_name_input")
             with bot_col2:
-                st.write("") # Hizalama için
+                st.write("")
                 st.write("") 
                 if st.button("Botu Ekle"):
                     bot_count = room_data.get("bot_count", 0) + 1
@@ -157,17 +166,17 @@ else:
                 player_list = list(players.keys())
                 roles_assignment = {}
 
-                # TEST MODU VARSA KURUCUNUN ROLÜNÜ SABİTLE
-                if room_data.get("test_mode") and room_data.get("host_chosen_role"):
-                    host_role = room_data["host_chosen_role"]
-                    roles_assignment[my_name] = host_role
+                # TEST MODU VARSA KURUCUNUN ROLÜ SABİTLENİR
+                if room_data.get("test_mode"):
+                    h_role = room_data.get("host_chosen_role", "Köylü")
+                    roles_assignment[my_name] = h_role
                     
                     other_players = [p for p in player_list if p != my_name]
                     random.shuffle(other_players)
                     
                     pool = ["Vampir", "Doktor", "Gözcü", "Köylü", "Köylü"]
-                    if host_role in pool:
-                        pool.remove(host_role)
+                    if h_role in pool:
+                        pool.remove(h_role)
                     
                     for p in other_players:
                         if pool:
@@ -197,6 +206,11 @@ else:
     # --- DURUM 2: GECE FAZI ---
     elif status == "NIGHT":
         st.subheader("🌙 Gece Oldu")
+        
+        logs = room_data.get("logs", [])
+        if logs:
+            st.info(f"📋 **Son Durum:** {logs[-1]}")
+
         st.write("Herkes uykuya daldı...")
 
         if not my_info.get("is_alive"):
@@ -289,9 +303,10 @@ else:
     elif status == "DAY":
         st.subheader("☀️ Gündüz Oldu")
         
+        # GECE VE OYLAMA ÖZETLERİNİ AÇIKÇA GÖSTER
         logs = room_data.get("logs", [])
         if logs:
-            st.info(logs[-1])
+            st.warning(f"📢 **Olay Özetleri:**\n\n{logs[-1]}")
 
         st.write("### Oyuncu Durumları:")
         for p, data in players.items():
@@ -306,12 +321,12 @@ else:
             
             if st.button("Oy Kullan"):
                 room_ref.update({f"players.{my_name}.voted_against": vote_target})
-                st.success("Oyunuz kaydedildi.")
+                st.success(f"Oyunuz ({vote_target}) kaydedildi.")
 
         if is_host:
             st.markdown("---")
             if st.button("Oylamayı Bitir ve Geceye Geç"):
-                # Bot oylarını otomatik üret
+                # Bot oylarını üret
                 all_alive = [p for p, data in players.items() if data["is_alive"]]
                 for p_name, p_data in players.items():
                     if p_data["is_alive"] and p_data.get("is_bot"):
@@ -323,31 +338,31 @@ else:
                 updated_room = room_ref.get().to_dict()
                 updated_players = updated_room.get("players", {})
 
-                # Oyları Hesapla ve Detaylı Mesaj Oluştur
+                # Oyları Say ve Detaylandır
                 votes = {}
                 for p, data in updated_players.items():
                     target = data.get("voted_against")
                     if target and updated_players.get(p, {}).get("is_alive"):
                         votes[target] = votes.get(target, 0) + 1
 
-                vote_summary = []
+                vote_details = []
                 for target_player, count in votes.items():
-                    vote_summary.append(f"{target_player}: {count} oy")
+                    vote_details.append(f"**{target_player}**: {count} oy")
                 
-                summary_text = " | ".join(vote_summary) if vote_summary else "Kimse oy kullanmadı."
+                summary_text = ", ".join(vote_details) if vote_details else "Kimse oy kullanmadı."
 
                 eliminated_player = None
                 if votes:
                     eliminated_player = max(votes, key=votes.get)
 
                 updates = {"status": "NIGHT"}
-                log_msg = f"Oylama Tamamlandı ({summary_text}). "
+                log_msg = f"Oylama Sonuçları: [{summary_text}]. "
 
                 if eliminated_player:
                     updates[f"players.{eliminated_player}.is_alive"] = False
                     log_msg += f"En çok oyu alan **{eliminated_player}** kasabadan sürüldü!"
                 else:
-                    log_msg += "Eşitlik veya oy kullanılmadığı için kimse elenmedi."
+                    log_msg += "Oylarda eşitlik olduğu için kimse elenmedi."
 
                 for p in updated_players.keys():
                     updates[f"players.{p}.voted_against"] = None
@@ -379,6 +394,27 @@ else:
                     "status": "LOBBY",
                     "logs": ["Yeni oyun için lobiye dönüldü."]
                 })
+                st.rerun()
+
+    # --- SOHBET / CHAT MODÜLÜ ---
+    st.markdown("---")
+    st.subheader("💬 Kasaba Sohbeti")
+    
+    messages = room_data.get("messages", [])
+    chat_container = st.container()
+    
+    with chat_container:
+        for msg in messages[-10:]:  # Son 10 mesajı göster
+            st.text(f"{msg['sender']}: {msg['text']}")
+
+    col_chat1, col_chat2 = st.columns([4, 1])
+    with col_chat1:
+        new_msg = st.text_input("Mesajınız:", key="chat_input", label_visibility="collapsed")
+    with col_chat2:
+        if st.button("Gönder"):
+            if new_msg.strip():
+                msg_data = {"sender": my_name, "text": new_msg.strip()}
+                room_ref.update({"messages": firestore.ArrayUnion([msg_data])})
                 st.rerun()
 
     # Otomatik sayfa yenileme
